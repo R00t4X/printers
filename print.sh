@@ -10,13 +10,17 @@ separator="───────────────────────
 check_dependencies() {
   echo "$separator"
   echo ">>> Проверка прав и зависимостей"
-  if [[ $EUID -ne 0 ]]; then
+  if [[ $(id -u) -ne 0 ]]; then
     echo "❌ Запусти с sudo или от root."
     exit 1
   fi
   echo "✔ Проверка прав доступа: пройдено"
 
-  local required_cmds=(wget apt-get lpadmin lpinfo lpstat lpoptions hp-setup apt-repo rpm lsusb 7z)
+  local required_cmds=(wget apt-get lpadmin lpinfo lpstat lpoptions hp-setup lsusb 7z)
+  # Add conditional checks for apt-repo and rpm if their functionality is required
+  if [[ "$MODE" == "2" || "$METHOD" == "3" ]]; then
+    required_cmds+=(apt-repo rpm)
+  fi
   for cmd in "${required_cmds[@]}"; do
     if ! command -v "$cmd" &>/dev/null; then
       echo "❌ Не найдено: $cmd"
@@ -45,7 +49,10 @@ update_packages() {
 ########################################
 # Функция: Проверка и удаление установленных принтеров
 ########################################
-remove_existing_printers() {
+  if ! printers_output=$(lpstat -p 2>&1); then
+    echo "❌ Ошибка выполнения команды lpstat -p"
+    exit 1
+  fi
   echo "$separator"
   echo ">>> Текущие очереди принтеров"
   local printers_output
@@ -110,17 +117,21 @@ check_printer_connection() {
   fi
 }
 
-########################################
-# Функция: Добавление 'domain users' в группы
-########################################
 add_domain_users_to_groups() {
   echo "$separator"
   echo ">>> Добавление 'domain users' в группы: lp, camera, scanner"
   for group in lp camera scanner; do
-    if ! roleadd 'domain users' "$group"; then
+    if ! getent group "$group" &>/dev/null; then
+      echo "❌ Группа $group не существует"
+      exit 1
+    fi
+    if ! usermod -a -G "$group" 'domain users'; then
       echo "❌ Не удалось добавить 'domain users' в группу $group"
       exit 1
     fi
+  done
+  echo "✔ Доменные пользователи успешно добавлены в группы lp, camera, scanner"
+}
   done
   echo "✔ Доменные пользователи успешно добавлены в группы lp, camera, scanner"
 }
@@ -147,7 +158,19 @@ install_additional_packages_for_model() {
     "Brother MFC-8710DW" "Brother MFC-8860DN" "Brother MFC-L2700DN" "Brother MFC-L2700DW"
     "Brother MFC-L2710DN" "Brother MFC-L2710DW" "Brother MFC-L2750DW" "Brother MFC-L3750CDW"
     "Lenovo LJ2650DN" "Lenovo M7605D" "Fuji Xerox DocuPrint P265 DW"
-  )
+      if ! dpkg-query -W -f='${Status}' printer-driver-brlaser 2>/dev/null | grep -q "install ok installed"; then
+        echo "→ Устанавливаю пакет printer-driver-brlaser..."
+        apt-get -y install printer-driver-brlaser
+      else
+        echo "✔ Пакет printer-driver-brlaser уже установлен"
+      fi
+
+      if ! dpkg-query -W -f='${Status}' mupdf 2>/dev/null | grep -q "install ok installed"; then
+        echo "→ Устанавливаю пакет mupdf..."
+        apt-get -y install mupdf
+      else
+        echo "✔ Пакет mupdf уже установлен"
+      fi
   for pattern in "${allowed_patterns[@]}"; do
     if [[ "$model" == *"$pattern"* ]]; then
       echo "→ Обнаружена модель '$model', требующая установки дополнительных пакетов."
@@ -199,13 +222,13 @@ auto_install_brother_packages() {
   done <<< "$brother_drivers"
   if [[ $found -eq 1 ]]; then
     echo "→ Устанавливаю дополнительные пакеты для Brother принтера..."
-    apt-get -y install printer-driver-brlaser mupdf
+  if grep -q "http://repo.proc.ru/mirror c10f1/branch/x86_64-i586 classic" /etc/apt/sources.list /etc/apt/sources.list.d/*; then
+    echo "Репозиторий уже добавлен."
   else
-    echo "Драйверы Brother не соответствуют списку для установки дополнительных пакетов."
+    echo "Добавляю репозиторий для Canon драйверов..."
+    echo "deb [arch=amd64] http://repo.proc.ru/mirror c10f1/branch/x86_64-i586 classic" | sudo tee /etc/apt/sources.list.d/canon.list
+    apt-get update
   fi
-}
-
-########################################
 # Функция: Настройка репозитория для Canon
 ########################################
 setup_canon_repo() {
@@ -259,8 +282,23 @@ extract_and_search() {
     exit 1
   fi
   mkdir -p "$dest_dir"
-  if ! 7z x "$archive" -o"$dest_dir" >/dev/null; then
-    echo "❌ Ошибка извлечения архива"
+  if command -v 7z &>/dev/null; then
+    if ! 7z x "$archive" -o"$dest_dir" >/dev/null; then
+      echo "❌ Ошибка извлечения архива с помощью 7z"
+      exit 1
+    fi
+  elif [[ "$archive" =~ \.tar\.gz$ || "$archive" =~ \.tgz$ ]]; then
+    if ! tar -xzf "$archive" -C "$dest_dir"; then
+      echo "❌ Ошибка извлечения архива с помощью tar"
+      exit 1
+    fi
+  elif [[ "$archive" =~ \.zip$ ]]; then
+    if ! unzip -q "$archive" -d "$dest_dir"; then
+      echo "❌ Ошибка извлечения архива с помощью unzip"
+      exit 1
+    fi
+  else
+    echo "❌ Формат архива не поддерживается"
     exit 1
   fi
   echo "✔ Архив успешно извлечён"
@@ -317,12 +355,17 @@ find_install_files() {
       fi
     fi
   else
-    echo "❌ Установочные файлы не найдены в архиве"
-    echo "Содержимое распакованного архива:"
-    find "$search_dir" -type f | sed 's/^/  /'
+  if apt-cache show rastertokpsl-re &>/dev/null; then
+    if apt-get install -y rastertokpsl-re; then
+      echo "✔ Пакет rastertokpsl-re установлен"
+    else
+      echo "❌ Ошибка установки rastertokpsl-re"
+      exit 1
+    fi
+  else
+    echo "❌ Пакет rastertokpsl-re отсутствует в репозитории"
     exit 1
   fi
-}
 
 ########################################
 # Функция: Автоматическая установка из PPD
@@ -391,13 +434,17 @@ install_hplip() {
   hp-setup
 }
 
-########################################
-# Функция: Автоматическая установка через RPM
-########################################
-install_rpm_auto() {
-  local rpm_file="$1"
   echo "$separator"
   echo ">>> Автоматическая установка RPM: $rpm_file"
+  if ! command -v alien &>/dev/null; then
+    echo "→ Устанавливаю пакет alien для обработки RPM..."
+    apt-get install -y alien || { echo "❌ Ошибка установки alien"; exit 1; }
+  fi
+  if ! alien -i "$rpm_file"; then
+    echo "❌ Ошибка установки RPM-пакета через alien"
+    exit 1
+  fi
+  echo "✔ RPM-пакет успешно установлен через alien"
   if ! apt-get install -y "$rpm_file"; then
     echo "❌ Ошибка установки RPM-пакета"
     exit 1
@@ -410,7 +457,18 @@ install_rpm_auto() {
     printf "%3d) %s\n" $((i+1)) "${devs[i]}"
   done
   read -r -p "Введите номер устройства для поиска драйвера: " idx
-  local device="${devs[idx-1]}"
+  if [[ -z "$model_full" ]]; then
+    echo "❌ Не удалось определить модель устройства. Проверьте подключение принтера."
+    exit 1
+  fi
+
+  # Check if USB URIs are available
+  local uri
+  uri=$(lpinfo -v | sed -n 's/.*\(usb:\/\/[^[:space:]]\+\).*/\1/p' | head -n 1)
+  if [[ -z "$uri" ]]; then
+    echo "❌ USB-URI не найден. Проверьте подключение принтера."
+    exit 1
+  fi
   echo "▶ Выбранное устройство: $device"
   local model_full
   model_full=$(echo "$device" | sed -En 's/.*ID[[:space:]]+[0-9a-fA-F]{4}:[0-9a-fA-F]{4}[[:space:]]+(.+)/\1/p')
@@ -676,19 +734,29 @@ main_menu() {
         *) echo "❌ Неверный выбор"; exit 1 ;;
       esac
       ;;
-    2)
-      read -r -p "Введите путь к файлу (или ссылку на файл) для автоматической установки: " chosen_file
-      choose_stage_by_link_auto "$chosen_file"
-      ;;
-    *)
-      echo "❌ Неверный выбор"
-      exit 1
-      ;;
-  esac
-}
-
 ########################################
 # Точка входа
+########################################
+if command -v roleadd &>/dev/null; then
+  add_domain_users_to_groups
+else
+  echo "❌ Команда 'roleadd' не найдена. Пропускаю добавление доменных пользователей в группы."
+fi
+check_printer_connection
+auto_install_brother_packages
+      exit 1
+########################################
+# Точка входа
+########################################
+add_domain_users_to_groups
+check_printer_connection
+
+# Проверка наличия драйверов Brother перед вызовом функции
+if lpinfo -m | grep -q '^Brother'; then
+  auto_install_brother_packages
+else
+  echo "Нет найденных драйверов Brother, пропускаю установку дополнительных пакетов."
+fi
 ########################################
 add_domain_users_to_groups
 check_printer_connection
