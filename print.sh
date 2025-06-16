@@ -179,15 +179,45 @@ install_from_zip() {
     # Получаем имя принтера из имени архива (без расширения)
     local printer_dir
     printer_dir="$(basename "$zip_file")"
-    printer_dir="${printer_dir%.*}"
+    printer_dir="${printer_dir%%.*}"
     local unzip_dir="/tmp/${printer_dir}"
-    log_info "Распаковываю ZIP: $zip_file в $unzip_dir"
+    log_info "Распаковываю архив: $zip_file в $unzip_dir"
     rm -rf "$unzip_dir"
-    if ! 7z x "$zip_file" -o"$unzip_dir" >>"$LOG_FILE" 2>&1; then
-        log_error "Ошибка распаковки архива $zip_file"
-        log_solution "Проверьте целостность архива и наличие утилиты 7z."
-        return 1
-    fi
+    mkdir -p "$unzip_dir"
+
+    # Определяем тип архива и распаковываем соответствующим инструментом
+    case "$zip_file" in
+        *.zip)
+            if ! 7z x "$zip_file" -o"$unzip_dir" >>"$LOG_FILE" 2>&1; then
+                log_error "Ошибка распаковки ZIP-архива $zip_file"
+                log_solution "Проверьте целостность архива и наличие утилиты 7z."
+                return 1
+            fi
+            ;;
+        *.tar.gz|*.tgz)
+            if ! tar -xzf "$zip_file" -C "$unzip_dir" >>"$LOG_FILE" 2>&1; then
+                log_error "Ошибка распаковки TAR.GZ-архива $zip_file"
+                log_solution "Проверьте целостность архива и наличие утилиты tar."
+                return 1
+            fi
+            ;;
+        *.tar)
+            if ! tar -xf "$zip_file" -C "$unzip_dir" >>"$LOG_FILE" 2>&1; then
+                log_error "Ошибка распаковки TAR-архива $zip_file"
+                log_solution "Проверьте целостность архива и наличие утилиты tar."
+                return 1
+            fi
+            ;;
+        *)
+            # Попробуем 7z для других форматов (например, rar, 7z и др.)
+            if ! 7z x "$zip_file" -o"$unzip_dir" >>"$LOG_FILE" 2>&1; then
+                log_error "Ошибка распаковки архива $zip_file неизвестного типа"
+                log_solution "Проверьте целостность архива и наличие утилиты 7z."
+                return 1
+            fi
+            ;;
+    esac
+
     log_info "Содержимое распакованного архива:"
     ls -lR "$unzip_dir" | tee -a "$LOG_FILE"
     local found_ppd found_sh
@@ -198,7 +228,7 @@ install_from_zip() {
     elif [[ -n "$found_sh" ]]; then
         install_from_hplip "$found_sh" "$mode"
     else
-        log_error "В ZIP не найдено поддерживаемых файлов для установки."
+        log_error "В архиве не найдено поддерживаемых файлов для установки."
         log_solution "Проверьте содержимое архива. Ожидаются файлы .ppd, .sh или .run."
         return 1
     fi
