@@ -1,770 +1,245 @@
 #!/bin/bash
-set -euo pipefail
+# set -euo pipefail   # ← закомментируйте или удалите эту строку
 IFS=$'\n\t'
 
-separator="────────────────────────────────────────"
+############################################################
+# 1. Константы и переменные
+############################################################
+LOG_FILE="/var/log/printer_install.log"
+TMP_DIR="/tmp/printer_install"
+REQUIRED_UTILS=(wget apt-get lpadmin lpinfo lpstat lpoptions hp-setup lsusb 7z)
+GROUPS_TO_ADD=(lp scanner camera)
+PRINTER_KEYWORDS="Printer|HP|Brother|Canon|Epson"
 
-########################################
-# Функция: Проверка привилегий и зависимостей
-########################################
+############################################################
+# 2. Логирование и вывод сообщений
+############################################################
+log_info() {
+    echo "[ИНФО] $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"
+}
+
+log_error() {
+    echo "[ОШИБКА] $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE" >&2
+}
+
+log_solution() {
+    echo "[РЕШЕНИЕ] $*" | tee -a "$LOG_FILE"
+}
+
+############################################################
+# 3. Проверки окружения и зависимостей
+############################################################
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        log_error "Скрипт должен быть запущен от root."
+        log_solution "Запустите скрипт от имени пользователя root (например: su -c './main.sh ...')."
+        return 1
+    fi
+}
+
 check_dependencies() {
-  echo "$separator"
-  echo ">>> Проверка прав и зависимостей"
-  if [[ $(id -u) -ne 0 ]]; then
-    echo "❌ Запусти с sudo или от root."
-    exit 1
-  fi
-  echo "✔ Проверка прав доступа: пройдено"
-
-  local required_cmds=(wget apt-get lpadmin lpinfo lpstat lpoptions hp-setup lsusb 7z)
-  # Add conditional checks for apt-repo and rpm if their functionality is required
-  if [[ "$MODE" == "2" || "$METHOD" == "3" ]]; then
-    required_cmds+=(apt-repo rpm)
-  fi
-  for cmd in "${required_cmds[@]}"; do
-    if ! command -v "$cmd" &>/dev/null; then
-      echo "❌ Не найдено: $cmd"
-      exit 1
-    fi
-  done
-  echo "✔ Все нужные команды доступны"
-  echo
-}
-
-########################################
-# Функция: Обновление списка пакетов
-########################################
-update_packages() {
-  echo "$separator"
-  echo ">>> Обновление списка пакетов"
-  if apt-get update -qq; then
-    echo "✔ apt-get update OK"
-  else
-    echo "❌ Ошибка apt-get update"
-    exit 1
-  fi
-  echo
-}
-
-########################################
-# Функция: Проверка и удаление установленных принтеров
-########################################
-  if ! printers_output=$(lpstat -p 2>&1); then
-    echo "❌ Ошибка выполнения команды lpstat -p"
-    exit 1
-  fi
-  echo "$separator"
-  echo ">>> Текущие очереди принтеров"
-  local printers_output
-  printers_output=$(lpstat -p 2>&1) || true
-  if echo "$printers_output" | grep -qF "Нет добавленных назначений"; then
-    echo "  принтеров нет"
-  else
-    echo "$printers_output" | sed 's/^/  /'
-    read -r -p "Удалить принтер? [y/N]: " delq
-    if [[ $delq =~ ^[Yy] ]]; then
-      read -r -p "  Точное имя принтера для удаления: " delp
-      if lpadmin -x "$delp"; then
-        echo "  ✔ Удалён $delp"
-      else
-        echo "  ❌ '$delp' не найден"
-      fi
-    fi
-  fi
-  echo
-}
-
-########################################
-# Функция: Тестовая печать
-########################################
-test_print() {
-  echo "$separator"
-  echo "Доступные принтеры:"
-  lpstat -p 2>&1 || true
-  echo
-  read -r -p "Введите название принтера для тестовой печати или оставьте пустым для использования принтера по умолчанию: " chosen_printer
-  if [[ -z "$chosen_printer" ]]; then
-    chosen_printer=$(lpstat -d 2>/dev/null | awk -F': ' '{print $2}') || true
-    if [[ -z "$chosen_printer" ]]; then
-      echo "❌ Принтер по умолчанию не найден. Проверьте установку принтера."
-      return
-    else
-      echo "Используется принтер по умолчанию: $chosen_printer"
-    fi
-  fi
-  if lp -d "$chosen_printer" /usr/share/cups/data/testprint; then
-    echo "✔ Тестовая страница отправлена на принтер '$chosen_printer'"
-  else
-    echo "❌ Не удалось отправить тестовую печать на '$chosen_printer'"
-  fi
-  echo "$separator"
-  echo "Готово!"
-}
-
-########################################
-# Функция: Проверка подключения принтера по lsusb
-########################################
-check_printer_connection() {
-  echo "$separator"
-  echo ">>> Проверка подключения принтера через lsusb"
-  lsusb_output=$(lsusb)
-  echo "$lsusb_output" | sed 's/^/  /'
-  echo
-  read -r -p "Принтер подключен? [y/N]: " resp
-  if [[ ! $resp =~ ^[Yy] ]]; then
-    echo "❌ Принтер не подключен. Завершаю работу."
-    exit 1
-  fi
-}
-
-add_domain_users_to_groups() {
-  echo "$separator"
-  echo ">>> Добавление 'domain users' в группы: lp, camera, scanner"
-  for group in lp camera scanner; do
-    if ! getent group "$group" &>/dev/null; then
-      echo "❌ Группа $group не существует"
-      exit 1
-    fi
-    if ! usermod -a -G "$group" 'domain users'; then
-      echo "❌ Не удалось добавить 'domain users' в группу $group"
-      exit 1
-    fi
-  done
-  echo "✔ Доменные пользователи успешно добавлены в группы lp, camera, scanner"
-}
-  done
-  echo "✔ Доменные пользователи успешно добавлены в группы lp, camera, scanner"
-}
-
-########################################
-# Функция: Установка дополнительных пакетов для моделей из списка
-########################################
-install_additional_packages_for_model() {
-  local model="$1"
-  local allowed_patterns=(
-    "Brother DCP-1510" "Brother DCP-1600" "Brother DCP-7020" "Brother DCP-7030"
-    "Brother DCP-7040" "Brother DCP-7055" "Brother DCP-7055W" "Brother DCP-7060D"
-    "Brother DCP-7065DN" "Brother DCP-7070DW" "Brother DCP-7080" "Brother DCP-L2500D"
-    "Brother DCP-L2510D" "Brother DCP-L2520D" "Brother DCP-L2520DW" "Brother DCP-L2537DW"
-    "Brother DCP-L2540DW" "Brother DCP-L2550DW" "Brother HL-1110" "Brother HL-1200"
-    "Brother HL-2030" "Brother HL-2130" "Brother HL-2140" "Brother HL-2220"
-    "Brother HL-2230" "Brother HL-2240D" "Brother HL-2250DN" "Brother HL-2270DW"
-    "Brother HL-2280DW" "Brother HL-5030" "Brother HL-5040" "Brother HL-L2300D"
-    "Brother HL-L2305" "Brother HL-L2310D" "Brother HL-L2320D" "Brother HL-L2340D"
-    "Brother HL-L2350DW" "Brother HL-L2360D" "Brother HL-L2375DW" "Brother HL-L2380DW"
-    "Brother HL-L2390DW" "Brother MFC-1810" "Brother MFC-1910W" "Brother MFC-7240"
-    "Brother MFC-7320" "Brother MFC-7340" "Brother MFC-7360N" "Brother MFC-7365DN"
-    "Brother MFC-7420" "Brother MFC-7440N" "Brother MFC-7460DN" "Brother MFC-7840W"
-    "Brother MFC-8710DW" "Brother MFC-8860DN" "Brother MFC-L2700DN" "Brother MFC-L2700DW"
-    "Brother MFC-L2710DN" "Brother MFC-L2710DW" "Brother MFC-L2750DW" "Brother MFC-L3750CDW"
-    "Lenovo LJ2650DN" "Lenovo M7605D" "Fuji Xerox DocuPrint P265 DW"
-      if ! dpkg-query -W -f='${Status}' printer-driver-brlaser 2>/dev/null | grep -q "install ok installed"; then
-        echo "→ Устанавливаю пакет printer-driver-brlaser..."
-        apt-get -y install printer-driver-brlaser
-      else
-        echo "✔ Пакет printer-driver-brlaser уже установлен"
-      fi
-
-      if ! dpkg-query -W -f='${Status}' mupdf 2>/dev/null | grep -q "install ok installed"; then
-        echo "→ Устанавливаю пакет mupdf..."
-        apt-get -y install mupdf
-      else
-        echo "✔ Пакет mupdf уже установлен"
-      fi
-  for pattern in "${allowed_patterns[@]}"; do
-    if [[ "$model" == *"$pattern"* ]]; then
-      echo "→ Обнаружена модель '$model', требующая установки дополнительных пакетов."
-      apt-get -y install printer-driver-brlaser mupdf
-      return 0
-    fi
-  done
-  return 1
-}
-
-########################################
-# Функция: Автоматическая установка дополнительных пакетов для Brother
-########################################
-auto_install_brother_packages() {
-  echo "$separator"
-  echo ">>> Автоматическая проверка драйверов Brother для установки дополнительных пакетов"
-  local brother_drivers
-  brother_drivers=$(lpinfo -m | grep '^Brother')
-  if [[ -z "$brother_drivers" ]]; then
-    echo "Нет найденных драйверов Brother"
-    return
-  fi
-  local allowed_patterns=(
-    "Brother DCP-1510" "Brother DCP-1600" "Brother DCP-7020" "Brother DCP-7030"
-    "Brother DCP-7040" "Brother DCP-7055" "Brother DCP-7055W" "Brother DCP-7060D"
-    "Brother DCP-7065DN" "Brother DCP-7070DW" "Brother DCP-7080" "Brother DCP-L2500D"
-    "Brother DCP-L2510D" "Brother DCP-L2520D" "Brother DCP-L2520DW" "Brother DCP-L2537DW"
-    "Brother DCP-L2540DW" "Brother DCP-L2550DW" "Brother HL-1110" "Brother HL-1200"
-    "Brother HL-2030" "Brother HL-2130" "Brother HL-2140" "Brother HL-2220"
-    "Brother HL-2230" "Brother HL-2240D" "Brother HL-2250DN" "Brother HL-2270DW"
-    "Brother HL-2280DW" "Brother HL-5030" "Brother HL-5040" "Brother HL-L2300D"
-    "Brother HL-L2305" "Brother HL-L2310D" "Brother HL-L2320D" "Brother HL-L2340D"
-    "Brother HL-L2350DW" "Brother HL-L2360D" "Brother HL-L2375DW" "Brother HL-L2380DW"
-    "Brother HL-L2390DW" "Brother MFC-1810" "Brother MFC-1910W" "Brother MFC-7240"
-    "Brother MFC-7320" "Brother MFC-7340" "Brother MFC-7360N" "Brother MFC-7365DN"
-    "Brother MFC-7420" "Brother MFC-7440N" "Brother MFC-7460DN" "Brother MFC-7840W"
-    "Brother MFC-8710DW" "Brother MFC-8860DN" "Brother MFC-L2700DN" "Brother MFC-L2700DW"
-    "Brother MFC-L2710DN" "Brother MFC-L2710DW" "Brother MFC-L2750DW" "Brother MFC-L3750CDW"
-  )
-  local found=0
-  while IFS= read -r line; do
-    for pattern in "${allowed_patterns[@]}"; do
-      if [[ "$line" == *"$pattern"* ]]; then
-        echo "→ Обнаружен драйвер: $line, совпадающий с шаблоном: $pattern"
-        found=1
-        break 2
-      fi
-    done
-  done <<< "$brother_drivers"
-  if [[ $found -eq 1 ]]; then
-    echo "→ Устанавливаю дополнительные пакеты для Brother принтера..."
-  if grep -q "http://repo.proc.ru/mirror c10f1/branch/x86_64-i586 classic" /etc/apt/sources.list /etc/apt/sources.list.d/*; then
-    echo "Репозиторий уже добавлен."
-  else
-    echo "Добавляю репозиторий для Canon драйверов..."
-    echo "deb [arch=amd64] http://repo.proc.ru/mirror c10f1/branch/x86_64-i586 classic" | sudo tee /etc/apt/sources.list.d/canon.list
-    apt-get update
-  fi
-# Функция: Настройка репозитория для Canon
-########################################
-setup_canon_repo() {
-  echo "$separator"
-  echo ">>> Проверка и добавление репозитория для Canon драйверов"
-  if apt-repo list | grep -q "http://repo.proc.ru/mirror c10f1/branch/x86_64-i586 classic"; then
-    echo "Репозиторий уже добавлен."
-  else
-    echo "Добавляю репозиторий для Canon драйверов..."
-    apt-repo add rpm "[cert8]" "http://repo.proc.ru/mirror c10f1/branch/x86_64-i586 classic"
-    apt-get update
-  fi
-}
-
-########################################
-# Функция: Скачивание файла по URL
-########################################
-download_file() {
-  local url="$1"
-  local dest_dir="/tmp/printer_install"
-  local filename
-  mkdir -p "$dest_dir"
-  filename=$(basename "$url")
-  local dest_file="$dest_dir/$filename"
-  >&2 echo ">>> Скачивание файла"
-  >&2 echo "→ URL: $url"
-  >&2 echo "→ В файл: $dest_file"
-  if wget -q "$url" -O "$dest_file"; then
-    >&2 echo "✔ Файл успешно скачан"
-    echo "$dest_file"
-    return 0
-  else
-    >&2 echo "❌ Ошибка скачивания файла"
-    rm -f "$dest_file"
-    return 1
-  fi
-}
-
-########################################
-# Функция: Извлечение и поиск файлов в архиве
-########################################
-extract_and_search() {
-  local archive="$1"
-  local dest_dir="$2"
-  echo "$separator"
-  echo ">>> Извлечение архива в временную директорию"
-  echo "→ Архив: $archive"
-  echo "→ Каталог: $dest_dir"
-  if [[ ! -f "$archive" ]]; then
-    echo "❌ Архив не найден: $archive"
-    exit 1
-  fi
-  mkdir -p "$dest_dir"
-  if command -v 7z &>/dev/null; then
-    if ! 7z x "$archive" -o"$dest_dir" >/dev/null; then
-      echo "❌ Ошибка извлечения архива с помощью 7z"
-      exit 1
-    fi
-  elif [[ "$archive" =~ \.tar\.gz$ || "$archive" =~ \.tgz$ ]]; then
-    if ! tar -xzf "$archive" -C "$dest_dir"; then
-      echo "❌ Ошибка извлечения архива с помощью tar"
-      exit 1
-    fi
-  elif [[ "$archive" =~ \.zip$ ]]; then
-    if ! unzip -q "$archive" -d "$dest_dir"; then
-      echo "❌ Ошибка извлечения архива с помощью unzip"
-      exit 1
-    fi
-  else
-    echo "❌ Формат архива не поддерживается"
-    exit 1
-  fi
-  echo "✔ Архив успешно извлечён"
-  recursive_extract_archives "$dest_dir"
-  find "$dest_dir" -type f -name "*.sh" -exec chmod +x {} \;
-  find_install_files "$dest_dir"
-}
-
-recursive_extract_archives() {
-  local dir="$1"
-  find "$dir" -type f \( -iname "*.tar" -o -iname "*.tar.gz" -o -iname "*.tgz" -o -iname "*.zip" -o -iname "*.7z" \) | while read -r archive; do
-    local parent_dir
-    parent_dir=$(dirname "$archive")
-    echo "$separator"
-    echo ">>> Рекурсивное извлечение: $archive"
-    if ! 7z x "$archive" -o"$parent_dir" >/dev/null; then
-      echo "❌ Ошибка извлечения: $archive"
-      exit 1
-    fi
-    rm -f "$archive"
-    recursive_extract_archives "$parent_dir"
-  done
-}
-
-########################################
-# Функция: Поиск установочных файлов в каталоге
-########################################
-find_install_files() {
-  local search_dir="$1"
-  local found_files=()
-  echo "$separator"
-  echo ">>> Поиск установочных файлов в распакованном архиве"
-  while IFS= read -r -d '' file; do
-    found_files+=("$file")
-  done < <(find "$search_dir" -type f \( -name "*.ppd" -o -name "*.rpm" -o -name "*.sh" \) -print0)
-  if (( ${#found_files[@]} > 0 )); then
-    echo "✔ Найдено файлов: ${#found_files[@]}"
-    if (( ${#found_files[@]} == 1 )); then
-      echo "→ Найден файл: ${found_files[0]}"
-      choose_stage_by_link_auto "${found_files[0]}"
-    else
-      echo "Найдено несколько файлов:"
-      for i in "${!found_files[@]}"; do
-        local file="${found_files[$i]}"
-        local ext="${file##*.}"
-        printf "%3d) [%s] %s\n" $((i+1)) "$ext" "$file"
-      done
-      read -r -p "Выберите номер файла для установки: " choice
-      if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice > 0 && choice <= ${#found_files[@]} )); then
-        choose_stage_by_link_auto "${found_files[choice-1]}"
-      else
-        echo "❌ Неверный выбор"
-        exit 1
-      fi
-    fi
-  else
-  if apt-cache show rastertokpsl-re &>/dev/null; then
-    if apt-get install -y rastertokpsl-re; then
-      echo "✔ Пакет rastertokpsl-re установлен"
-    else
-      echo "❌ Ошибка установки rastertokpsl-re"
-      exit 1
-    fi
-  else
-    echo "❌ Пакет rastertokpsl-re отсутствует в репозитории"
-    exit 1
-  fi
-
-########################################
-# Функция: Автоматическая установка из PPD
-########################################
-install_from_ppd_auto() {
-  local ppd_file="$1"
-  echo "$separator"
-  echo ">>> Автоматическая установка из PPD: $ppd_file"
-  echo "→ Устанавливаю пакет rastertokpsl-re..."
-  if apt-get install -y rastertokpsl-re; then
-    echo "✔ Пакет rastertokpsl-re установлен"
-  else
-    echo "❌ Ошибка установки rastertokpsl-re"
-    exit 1
-  fi
-  mkdir -p /usr/share/ppd
-  cp "$ppd_file" /usr/share/ppd/ || { echo "❌ Ошибка копирования $ppd_file"; exit 1; }
-  local base
-  base=$(basename "$ppd_file" .ppd)
-  if echo "$base" | grep -qi "brother"; then
-    install_additional_packages_for_model "$base"
-  fi
-  local uri
-  uri=$(lpinfo -v | sed -n 's/.*\(usb:\/\/[^[:space:]]\+\).*/\1/p' | head -n 1)
-  if [[ -z "$uri" ]]; then
-    echo "❌ USB-URI не найден. Проверьте подключение принтера."
-    exit 1
-  fi
-  if lpadmin -p "$base" -E -v "$uri" -P "/usr/share/ppd/$(basename "$ppd_file")"; then
-    echo "✔ Принтер '$base' установлен из PPD"
-    local default_printer
-    default_printer=$(lpstat -d 2>/dev/null | awk -F': ' '{print $2}')
-    if [[ -z "$default_printer" ]]; then
-      lpoptions -d "$base"
-      echo "✔ Принтер '$base' выставлен по умолчанию"
-    else
-      echo "✔ Принтер по умолчанию уже установлен: $default_printer"
-    fi
-    test_print
-  else
-    echo "❌ Ошибка установки принтера из PPD"
-    exit 1
-  fi
-}
-
-########################################
-# Функция: Режим HPLIP (интерактивная установка)
-########################################
-install_hplip() {
-  echo "$separator"
-  echo ">>> Режим HPLIP"
-  read -r -p "URL hp-setup.sh: " PLUGIN_URL
-  [[ -z "$PLUGIN_URL" ]] && { echo "❌ URL не указан"; exit 1; }
-  local D="/tmp/$(basename "$PLUGIN_URL")"
-  if ! wget -q "$PLUGIN_URL" -O "$D"; then
-    echo "❌ Ошибка скачивания"
-    exit 1
-  fi
-  chmod +x "$D"
-  echo "→ Запускаю плагин..."
-  if ! "$D"; then
-    echo "❌ Ошибка плагина"
-    exit 1
-  fi
-  echo "→ Запускаю hp-setup..."
-  hp-setup
-}
-
-  echo "$separator"
-  echo ">>> Автоматическая установка RPM: $rpm_file"
-  if ! command -v alien &>/dev/null; then
-    echo "→ Устанавливаю пакет alien для обработки RPM..."
-    apt-get install -y alien || { echo "❌ Ошибка установки alien"; exit 1; }
-  fi
-  if ! alien -i "$rpm_file"; then
-    echo "❌ Ошибка установки RPM-пакета через alien"
-    exit 1
-  fi
-  echo "✔ RPM-пакет успешно установлен через alien"
-  if ! apt-get install -y "$rpm_file"; then
-    echo "❌ Ошибка установки RPM-пакета"
-    exit 1
-  fi
-  echo "✔ RPM-пакеты установлены"
-  echo "$separator"
-  echo ">>> Обнаруженные USB-устройства:"
-  mapfile -t devs < <(lsusb)
-  for i in "${!devs[@]}"; do
-    printf "%3d) %s\n" $((i+1)) "${devs[i]}"
-  done
-  read -r -p "Введите номер устройства для поиска драйвера: " idx
-  if [[ -z "$model_full" ]]; then
-    echo "❌ Не удалось определить модель устройства. Проверьте подключение принтера."
-    exit 1
-  fi
-
-  # Check if USB URIs are available
-  local uri
-  uri=$(lpinfo -v | sed -n 's/.*\(usb:\/\/[^[:space:]]\+\).*/\1/p' | head -n 1)
-  if [[ -z "$uri" ]]; then
-    echo "❌ USB-URI не найден. Проверьте подключение принтера."
-    exit 1
-  fi
-  echo "▶ Выбранное устройство: $device"
-  local model_full
-  model_full=$(echo "$device" | sed -En 's/.*ID[[:space:]]+[0-9a-fA-F]{4}:[0-9a-fA-F]{4}[[:space:]]+(.+)/\1/p')
-  if [[ -z "$model_full" ]]; then
-    echo "❌ Не удалось определить модель устройства"
-    exit 1
-  else
-    echo "▶ Определена модель: $model_full"
-  fi
-  read -r -p "Введите производителя (например, hp, canon) или оставьте пустым: " manufacturer
-  local pattern
-  if [[ -n "$manufacturer" ]]; then
-    pattern="(?i)${manufacturer}.*\b${model_full}\b"
-  else
-    pattern="(?i)\b${model_full}\b"
-  fi
-  mapfile -t drivers < <(lpinfo -m | grep -E "$pattern")
-  if (( ${#drivers[@]} == 0 )); then
-    read -r -p "Драйверы не найдены автоматически. Введите полное название модели для поиска: " model_manual
-    if [[ -z "$model_manual" ]]; then
-      echo "❌ Не введено название модели"
-      exit 1
-    fi
-    pattern="(?i)\b${model_manual}\b"
-    mapfile -t drivers < <(lpinfo -m | grep -E "$pattern")
-    if (( ${#drivers[@]} == 0 )); then
-      echo "❌ Драйверы по указанному названию не найдены"
-      exit 1
-    fi
-  fi
-  echo "▶ Найдено драйверов: ${#drivers[@]}"
-  local driver
-  if (( ${#drivers[@]} > 1 )); then
-    echo "Выберите драйвер:"
-    for i in "${!drivers[@]}"; do
-      printf "%3d) %s\n" $((i+1)) "${drivers[i]}"
-    done
-    read -r -p "Введите номер драйвера: " driver_idx
-    driver="${drivers[driver_idx-1]}"
-  else
-    driver="${drivers[0]}"
-    echo "✔ Выбран драйвер: $driver"
-  fi
-  if echo "$driver" | grep -qi "brother"; then
-    install_additional_packages_for_model "$driver"
-  fi
-  mapfile -t uris < <(lpinfo -v | sed -n 's/.*\(usb:\/\/[^[:space:]]\+\).*/\1/p')
-  local uri
-  if (( ${#uris[@]} > 1 )); then
-    echo "Выберите USB-URI:"
-    for i in "${!uris[@]}"; do
-      printf "%3d) %s\n" $((i+1)) "${uris[i]}"
-    done
-    read -r -p "Введите номер URI: " uri_idx
-    uri="${uris[uri_idx-1]}"
-  elif (( ${#uris[@]} == 1 )); then
-    uri="${uris[0]}"
-  else
-    echo "❌ USB-URI не найден. Проверьте подключение принтера."
-    exit 1
-  fi
-  local printer_name="${driver%% *}"
-  printer_name="${printer_name//\//_}"
-  if lpadmin -p "$printer_name" -E -v "$uri" -m "$driver"; then
-    echo "✔ Принтер '$printer_name' установлен через RPM-метод"
-    test_print
-  else
-    echo "❌ Ошибка установки принтера '$printer_name'"
-    exit 1
-  fi
-}
-
-########################################
-# Функция: Автоматическая установка Canon через .sh
-########################################
-install_canon_auto() {
-  local canon_sh="$1"
-  echo "$separator"
-  echo ">>> Автоматическая установка Canon драйвера из .sh: $canon_sh"
-  setup_canon_repo
-  if [[ ! -x "$canon_sh" ]]; then
-    chmod +x "$canon_sh"
-  fi
-  if bash "$canon_sh"; then
-    echo "✔ Canon-драйвер установлен"
-    test_print
-  else
-    echo "❌ Ошибка установки Canon-драйвера"
-    exit 1
-  fi
-}
-
-########################################
-# Функция: Автоматическая установка драйвера из .sh файла
-########################################
-install_sh_driver() {
-  local sh_file="$1"
-  echo "$separator"
-  echo ">>> Автоматическая установка драйвера из .sh файла: $sh_file"
-  if [[ ! -x "$sh_file" ]]; then
-    chmod +x "$sh_file"
-  fi
-  if bash "$sh_file"; then
-    echo "✔ Скрипт выполнен успешно"
-    if command -v hp-setup &>/dev/null; then
-      echo "✔ HPLIP обнаружен. Переход к этапу дальнейшей настройки..."
-      echo "→ Запускаю hp-setup для завершения настройки..."
-      hp-setup
-      local default_printer
-      default_printer=$(lpstat -d 2>/dev/null | awk -F': ' '{print $2}')
-      if [[ -z "$default_printer" ]]; then
-        read -r -p "Принтер по умолчанию не задан. Установить первый найденный принтер по умолчанию? [y/N]: " set_def
-        if [[ $set_def =~ ^[Yy] ]]; then
-          local printer_list
-          printer_list=( $(lpstat -p 2>/dev/null | awk '{print $2}') )
-          if (( ${#printer_list[@]} > 0 )); then
-            default_printer="${printer_list[0]}"
-            lpoptions -d "$default_printer"
-            echo "✔ Принтер '$default_printer' установлен по умолчанию"
-          else
-            echo "❌ Не удалось получить список установленных принтеров"
-          fi
+    for util in "${REQUIRED_UTILS[@]}"; do
+        if ! command -v "$util" &>/dev/null; then
+            log_info "Устанавливаю отсутствующую утилиту: $util"
+            apt-get update >>"$LOG_FILE" 2>&1
+            if ! apt-get install -y "$util" >>"$LOG_FILE" 2>&1; then
+                log_error "Не удалось установить $util"
+                log_solution "Проверьте подключение к интернету и наличие репозиториев. Установите $util вручную: apt-get install $util"
+                # continue вместо exit
+                continue
+            fi
         fi
-      else
-        echo "✔ Принтер по умолчанию уже установлен: $default_printer"
-      fi
-      test_print
-      return 0
-    fi
-    local attempts=0
-    local max_attempts=10
-    local driver_found=""
-    while (( attempts < max_attempts )); do
-      echo "Попытка $((attempts+1)) поиска драйвера..."
-      local device
-      device=$(lsusb | head -n 1)
-      local model_full
-      model_full=$(echo "$device" | sed -En 's/.*ID[[:space:]]+[0-9a-fA-F]{4}:[0-9a-fA-F]{4}[[:space:]]+(.+)/\1/p')
-      if [[ -n "$model_full" ]]; then
-        echo "Определена модель: $model_full"
-        read -r -p "Введите производителя (например, hp, canon) или оставьте пустым: " manufacturer
-        local clean_model
-        clean_model=$(echo "$model_full" | sed -E 's/\b(ltd|inc|corp)\b//Ig' | tr -s ' ' | sed 's/^ *//;s/ *$//')
-        IFS=' ' read -r -a tokens <<< "$clean_model"
-        local dynamic_pattern="(?i)"
-        for token in "${tokens[@]}"; do
-          dynamic_pattern+="${token}.*"
+    done
+}
+
+############################################################
+# 4. Работа с группами пользователей
+############################################################
+add_user_groups() {
+    if getent group "domain users" >/dev/null; then
+        for grp in "${GROUPS_TO_ADD[@]}"; do
+            if ! getent group "$grp" >/dev/null; then
+                log_info "Группа $grp не существует, создаю."
+                groupadd "$grp"
+            fi
+            if ! id -nG "domain users" | grep -qw "$grp"; then
+                log_info "Добавляю 'domain users' в группу $grp"
+                gpasswd -a "domain users" "$grp" >>"$LOG_FILE" 2>&1
+            fi
         done
-        if [[ -n "$manufacturer" ]]; then
-          dynamic_pattern="(?i)${manufacturer}.*${dynamic_pattern}"
-        fi
-        echo "Используем паттерн для поиска драйвера: $dynamic_pattern"
-        mapfile -t drivers < <(lpinfo -m | grep -E "$dynamic_pattern")
-        if (( ${#drivers[@]} > 0 )); then
-          driver_found="${drivers[0]}"
-          echo "✔ Найден драйвер: $driver_found"
-          break
-        else
-          echo "Драйвер не найден, повторная попытка..."
-        fi
-      else
-        echo "Не удалось определить модель устройства, повторная попытка..."
-      fi
-      ((attempts++))
-      sleep 1
-    done
-    if [[ -z "$driver_found" ]]; then
-      echo "❌ Драйвер для принтера не найден после $attempts попыток"
-      exit 1
-    fi
-    local uri
-    uri=$(lpinfo -v | sed -n 's/.*\(usb:\/\/[^[:space:]]\+\).*/\1/p' | head -n 1)
-    if [[ -z "$uri" ]]; then
-      echo "❌ USB-URI не найден. Проверьте подключение принтера."
-      exit 1
-    fi
-    local printer_name="${driver_found%% *}"
-    printer_name="${printer_name//\//_}"
-    if lpadmin -p "$printer_name" -E -v "$uri" -m "$driver_found"; then
-      echo "✔ Принтер '$printer_name' установлен с найденным драйвером"
-      test_print
     else
-      echo "❌ Ошибка установки принтера '$printer_name'"
-      exit 1
+        log_info "Группа 'domain users' не найдена, пропускаю добавление в группы."
     fi
-  else
-    echo "❌ Ошибка выполнения скрипта $sh_file"
-    exit 1
-  fi
 }
 
-########################################
-# Функция: Автоматическое определение этапа установки по файлу
-########################################
-choose_stage_by_link_auto() {
-  local file_link="$1"
-  echo "$separator"
-  echo ">>> Автоматическое определение этапа установки для файла: $file_link"
-  local actual_file
-  if [[ "$file_link" =~ ^https?:// ]]; then
-    actual_file=$(download_file "$file_link") || exit 1
-  else
-    actual_file="$file_link"
-  fi
-  [[ ! -f "$actual_file" ]] && { echo "❌ Файл не найден: $actual_file"; exit 1; }
-  if [[ "$actual_file" =~ \.ppd$ ]]; then
-    echo "-> Режим: Установка из PPD"
-    install_from_ppd_auto "$actual_file"
-  elif [[ "$actual_file" =~ \.(tar\.gz|tgz|tar|7z|zip)$ ]]; then
-    echo "-> Режим: Извлечение архива"
-    local tmp_dir="/tmp/drivers"
-    mkdir -p "$tmp_dir"
-    extract_and_search "$actual_file" "$tmp_dir"
-  elif [[ "$actual_file" =~ \.rpm$ ]]; then
-    echo "-> Режим: Установка через RPM"
-    install_rpm_auto "$actual_file"
-  elif [[ "$actual_file" =~ \.sh$ ]]; then
-    echo "-> Режим: Установка драйвера из .sh файла"
-    install_sh_driver "$actual_file"
-  else
-    echo "❌ Неизвестный формат файла"
-    exit 1
-  fi
+############################################################
+# 5. Управление принтерами
+############################################################
+remove_printers() {
+    local mode="$1"
+    local printers
+    printers=$(lpstat -v | awk '{print $3}' | sed 's/:$//')
+    if [[ -z "$printers" ]]; then
+        log_info "Нет принтеров для удаления."
+        return
+    fi
+    for p in $printers; do
+        if [[ "$mode" == "manual" ]]; then
+            read -rp "Удалить принтер $p? [y/N]: " ans
+            [[ "$ans" =~ ^[Yy]$ ]] || continue
+        fi
+        log_info "Удаляю принтер $p"
+        lpadmin -x "$p" >>"$LOG_FILE" 2>&1 || log_error "Не удалось удалить принтер $p"
+    done
 }
 
-########################################
-# Главное интерактивное меню
-########################################
-main_menu() {
-  echo "$separator"
-  echo "Выберите режим работы:"
-  echo "  1) Стандартная установка принтера"
-  echo "  2) Установка через выбор этапа по файлу"
-  read -r -p "Ваш выбор [1-2]: " MODE
-  echo
-  case "$MODE" in
-    1)
-      check_dependencies
-      update_packages
-      remove_existing_printers
-      echo "$separator"
-      echo ">>> Метод установки"
-      echo "  1) Из PPD-файла"
-      echo "  2) Через HPLIP"
-      echo "  3) RPM-пакеты"
-      echo "  4) Скрипт установки (.sh файл)"
-      read -r -p "Выбор [1-4]: " METHOD
-      echo
-      case "$METHOD" in
-        1)
-          read -r -p "Путь к PPD-файлу: " file_ppd
-          install_from_ppd_auto "$file_ppd"
-          ;;
-        2) install_hplip ;;
-        3)
-          read -r -p "Путь к RPM-пакету: " file_rpm
-          install_rpm_auto "$file_rpm"
-          ;;
-        4)
-          read -r -p "Путь к скрипту (.sh) файла: " file_sh
-          install_sh_driver "$file_sh"
-          ;;
-        *) echo "❌ Неверный выбор"; exit 1 ;;
-      esac
-      ;;
-########################################
-# Точка входа
-########################################
-if command -v roleadd &>/dev/null; then
-  add_domain_users_to_groups
-else
-  echo "❌ Команда 'roleadd' не найдена. Пропускаю добавление доменных пользователей в группы."
-fi
-check_printer_connection
-auto_install_brother_packages
-      exit 1
-########################################
-# Точка входа
-########################################
-add_domain_users_to_groups
-check_printer_connection
+detect_printer() {
+    local found
+    found=$(lsusb | grep -E "$PRINTER_KEYWORDS" || true)
+    if [[ -z "$found" ]]; then
+        log_error "Поддерживаемый принтер через USB не обнаружен."
+        log_solution "Убедитесь, что принтер подключён и включён. Проверьте кабель и повторите попытку."
+        return 1
+    fi
+    log_info "Обнаружены принтер(ы): $found"
+}
 
-# Проверка наличия драйверов Brother перед вызовом функции
-if lpinfo -m | grep -q '^Brother'; then
-  auto_install_brother_packages
-else
-  echo "Нет найденных драйверов Brother, пропускаю установку дополнительных пакетов."
-fi
-########################################
-add_domain_users_to_groups
-check_printer_connection
-auto_install_brother_packages
+############################################################
+# 6. Установка драйверов принтера
+############################################################
+install_from_ppd() {
+    local ppd_file="$1"
+    local mode="$2"
+    local printer_name
+    printer_name="printer_$(date +%s)"
+    log_info "Устанавливаю принтер из PPD: $ppd_file"
+    if [[ "$mode" == "manual" ]]; then
+        read -rp "Установить принтер $printer_name с $ppd_file? [y/N]: " ans
+        [[ "$ans" =~ ^[Yy]$ ]] || return
+    fi
+    if ! lpadmin -p "$printer_name" -E -v usb://$(lsusb | grep -E "$PRINTER_KEYWORDS" | head -n1 | awk '{print $6}') -P "$ppd_file" >>"$LOG_FILE" 2>&1; then
+        log_error "Не удалось установить принтер $printer_name"
+        log_solution "Проверьте корректность PPD-файла и наличие прав. Попробуйте установить вручную через lpadmin."
+        return
+    fi
+    lpoptions -d "$printer_name" >>"$LOG_FILE" 2>&1
+    log_info "Принтер $printer_name установлен и выбран по умолчанию."
+    if [[ "$mode" == "manual" ]]; then
+        read -rp "Отправить тестовую страницу? [y/N]: " ans
+        [[ "$ans" =~ ^[Yy]$ ]] || return
+    fi
+    if ! lp -d "$printer_name" /usr/share/cups/data/testprint >>"$LOG_FILE" 2>&1; then
+        log_error "Ошибка тестовой печати"
+        log_solution "Проверьте подключение принтера и корректность драйвера."
+    fi
+}
 
-if [[ $# -gt 0 ]]; then
-  chosen_file="$1"
-  choose_stage_by_link_auto "$chosen_file"
-else
-  main_menu
-fi
+install_from_hplip() {
+    local script_file="$1"
+    local mode="$2"
+    log_info "Установка принтера через HPLIP-скрипт: $script_file"
+    chmod +x "$script_file"
+    if [[ "$mode" == "manual" ]]; then
+        read -rp "Запустить $script_file? [y/N]: " ans
+        [[ "$ans" =~ ^[Yy]$ ]] || return
+    fi
+    if ! "$script_file" --auto-setup >>"$LOG_FILE" 2>&1; then
+        log_error "Ошибка выполнения HPLIP-скрипта"
+        log_solution "Проверьте совместимость скрипта с вашей системой и выполните его вручную для диагностики."
+    fi
+}
+
+install_from_zip() {
+    local zip_file="$1"
+    local mode="$2"
+    log_info "Распаковываю ZIP: $zip_file"
+    if ! 7z x "$zip_file" -o"$TMP_DIR/unzipped" >>"$LOG_FILE" 2>&1; then
+        log_error "Ошибка распаковки архива $zip_file"
+        log_solution "Проверьте целостность архива и наличие утилиты 7z."
+        return 1
+    fi
+    log_info "Содержимое распакованного архива:"
+    ls -lR "$TMP_DIR/unzipped" | tee -a "$LOG_FILE"
+    local found_ppd found_sh
+    found_ppd=$(find "$TMP_DIR/unzipped" -type f -name "*.ppd" | head -n1 || true)
+    found_sh=$(find "$TMP_DIR/unzipped" -type f \( -name "*.sh" -o -name "*.run" \) | head -n1 || true)
+    if [[ -n "$found_ppd" ]]; then
+        install_from_ppd "$found_ppd" "$mode"
+    elif [[ -n "$found_sh" ]]; then
+        install_from_hplip "$found_sh" "$mode"
+    else
+        log_error "В ZIP не найдено поддерживаемых файлов для установки."
+        log_solution "Проверьте содержимое архива. Ожидаются файлы .ppd, .sh или .run."
+        return 1
+    fi
+}
+
+############################################################
+# 7. Основная логика работы скрипта
+############################################################
+main() {
+    check_root || log_solution "Запустите скрипт с правами root."  # не завершаем выполнение
+    mkdir -p "$TMP_DIR"
+    touch "$LOG_FILE"
+    chmod 600 "$LOG_FILE"
+
+    if [[ $# -lt 1 ]]; then
+        log_error "Использование: bash print.sh <URL_К_ФАЙЛУ> [auto|manual]"
+        log_solution "Передайте ссылку на драйвер и режим работы (auto/manual) в параметры скрипта."
+        return 1
+    fi
+
+    local url="$1"
+    local mode="${2:-auto}"
+    if [[ "$mode" != "auto" && "$mode" != "manual" ]]; then
+        log_error "Режим должен быть 'auto' или 'manual'"
+        log_solution "Укажите режим: auto (автоматически) или manual (с подтверждением действий)."
+        return 1
+    fi
+
+    check_dependencies
+    # add_user_groups   # ← закомментировано на время тестов
+
+    if [[ "$mode" == "auto" ]]; then
+        remove_printers "auto"
+    else
+        remove_printers "manual"
+    fi
+
+    detect_printer || log_solution "Подключите поддерживаемый принтер и повторите попытку."
+
+    local file_ext file_path
+    file_ext="${url##*.}"
+    file_path="$TMP_DIR/driver.$file_ext"
+
+    log_info "Скачиваю драйвер с $url"
+    if ! wget -O "$file_path" "$url" >>"$LOG_FILE" 2>&1; then
+        log_error "Не удалось скачать файл с $url"
+        log_solution "Проверьте корректность URL и доступность файла. Попробуйте скачать вручную."
+        return 1
+    fi
+
+    case "$file_ext" in
+        ppd)
+            install_from_ppd "$file_path" "$mode"
+            ;;
+        sh|run)
+            install_from_hplip "$file_path" "$mode"
+            ;;
+        zip)
+            install_from_zip "$file_path" "$mode"
+            ;;
+        *)
+            log_error "Неподдерживаемое расширение файла: $file_ext"
+            log_solution "Поддерживаются расширения: ppd, sh, run, zip."
+            return 1
+            ;;
+    esac
+
+    log_info "Установка принтера завершена."
+}
+
+############################################################
+# 8. Точка входа
+############################################################
+main "$@"
