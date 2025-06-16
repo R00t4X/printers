@@ -165,19 +165,25 @@ install_from_hplip() {
 install_from_zip() {
     local zip_file="$1"
     local mode="$2"
-    log_info "Распаковываю ZIP: $zip_file"
-    if ! 7z x "$zip_file" -o"$TMP_DIR/unzipped" >>"$LOG_FILE" 2>&1; then
+    # Получаем имя принтера из имени архива (без расширения)
+    local printer_dir
+    printer_dir="$(basename "$zip_file")"
+    printer_dir="${printer_dir%.*}"
+    local unzip_dir="/tmp/${printer_dir}"
+    log_info "Распаковываю ZIP: $zip_file в $unzip_dir"
+    rm -rf "$unzip_dir"
+    if ! 7z x "$zip_file" -o"$unzip_dir" >>"$LOG_FILE" 2>&1; then
         log_error "Ошибка распаковки архива $zip_file"
         log_solution "Проверьте целостность архива и наличие утилиты 7z."
         return 1
     fi
     log_info "Содержимое распакованного архива:"
-    ls -lR "$TMP_DIR/unzipped" | tee -a "$LOG_FILE"
+    ls -lR "$unzip_dir" | tee -a "$LOG_FILE"
     local found_ppd found_sh
-    found_ppd=$(find "$TMP_DIR/unzipped" -type f -name "*.ppd" | head -n1 || true)
-    found_sh=$(find "$TMP_DIR/unzipped" -type f \( -name "*.sh" -o -name "*.run" \) | head -n1 || true)
-    if [[ -n "$found_ppD" ]]; then
-        install_from_ppD "$found_ppD" "$mode"
+    found_ppd=$(find "$unzip_dir" -type f -name "*.ppd" | head -n1 || true)
+    found_sh=$(find "$unzip_dir" -type f \( -name "*.sh" -o -name "*.run" \) | head -n1 || true)
+    if [[ -n "$found_ppd" ]]; then
+        install_from_ppd "$found_ppd" "$mode"
     elif [[ -n "$found_sh" ]]; then
         install_from_hplip "$found_sh" "$mode"
     else
