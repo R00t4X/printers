@@ -137,13 +137,11 @@ install_from_ppd() {
     fi
     lpoptions -d "$printer_name" >>"$LOG_FILE" 2>&1
     log_info "Принтер $printer_name установлен и выбран по умолчанию."
+    log_info "Отправляю пробную страницу на $printer_name"
+    lp -d "$printer_name" /usr/share/cups/data/testprint >>"$LOG_FILE" 2>&1
     if [[ "$mode" == "manual" ]]; then
-        read -rp "Отправить тестовую страницу? [y/N]: " ans
-        [[ "$ans" =~ ^[Yy]$ ]] || return
-    fi
-    if ! lp -d "$printer_name" /usr/share/cups/data/testprint >>"$LOG_FILE" 2>&1; then
-        log_error "Ошибка тестовой печати"
-        log_solution "Проверьте подключение принтера и корректность драйвера."
+        read -rp "Отправить ещё одну тестовую страницу? [y/N]: " ans
+        [[ "$ans" =~ ^[Yy]$ ]] && lp -d "$printer_name" /usr/share/cups/data/testprint >>"$LOG_FILE" 2>&1
     fi
 }
 
@@ -164,12 +162,23 @@ install_from_hplip() {
             return
         fi
         log_info "Запуск hp-setup в интерактивном режиме (вывод в консоль)"
-        hp-setup
+        # Явно перенаправляем ввод/вывод hp-setup в терминал, чтобы не было подвисания
+        hp-setup < /dev/tty > /dev/tty 2>&1
     else
         if ! "$script_file" --auto-setup >>"$LOG_FILE" 2>&1; then
             log_error "Ошибка выполнения HPLIP-скрипта"
             log_solution "Проверьте совместимость скрипта с вашей системой и выполните его вручную для диагностики."
+            return
         fi
+    fi
+    # После установки ищем последний добавленный принтер и делаем его по умолчанию + тестовая печать
+    local last_printer
+    last_printer=$(lpstat -p | awk '{print $2}' | tail -n1)
+    if [[ -n "$last_printer" ]]; then
+        lpoptions -d "$last_printer" >>"$LOG_FILE" 2>&1
+        log_info "Принтер $last_printer выбран по умолчанию."
+        log_info "Отправляю пробную страницу на $last_printer"
+        lp -d "$last_printer" /usr/share/cups/data/testprint >>"$LOG_FILE" 2>&1
     fi
 }
 
@@ -450,6 +459,27 @@ main() {
         # Очистка переменных для новой итерации
         url=""; mode=""; file_ext=""; file_path=""
     done
+
+    # Меню выбора принтера для установки по умолчанию и тестовой печати
+    local printers printer_names printer_count printer_default
+    printers=$(lpstat -p | awk '{print $2}')
+    if [[ -n "$printers" ]]; then
+        echo "Выберите принтер, который нужно сделать по умолчанию и отправить пробную страницу:"
+        select printer_default in $printers "Пропустить"; do
+            if [[ "$printer_default" == "Пропустить" || -z "$printer_default" ]]; then
+                echo "Действие пропущено."
+                break
+            elif [[ -n "$printer_default" ]]; then
+                lpoptions -d "$printer_default" >>"$LOG_FILE" 2>&1
+                log_info "Принтер $printer_default выбран по умолчанию."
+                log_info "Отправляю пробную страницу на $printer_default"
+                lp -d "$printer_default" /usr/share/cups/data/testprint >>"$LOG_FILE" 2>&1
+                break
+            else
+                echo "Некорректный выбор."
+            fi
+        done
+    fi
 }
 
 ############################################################
