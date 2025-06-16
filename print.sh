@@ -266,24 +266,49 @@ main() {
         fi
 
         # Новый интерактивный этап проверки подключения принтера
-        while true; do
+        local printer_confirmed=0
+        for attempt in {1..10}; do
             clear
             echo "===== Проверка подключения принтера ====="
             echo "Текущее состояние USB-устройств:"
             lsusb | awk '{printf "%-10s %-40s %-40s\n", $2, $6, substr($0, index($0,$7))}'
             echo
-            read -rp "Подключен ли нужный принтер? [y/N]: " usb_ans
-            if [[ "$usb_ans" =~ ^[Yy]$ ]]; then
+            if detect_printer; then
+                printer_confirmed=1
                 break
             fi
-            echo -n "Повторная проверка через: "
+            echo "Принтер не обнаружен. Автоматическая повторная проверка через: "
             for t in {3..1}; do
                 echo -ne "$t\033[0K\r"
                 sleep 1
             done
         done
 
-        detect_printer || { log_solution "Подключите поддерживаемый принтер и повторите попытку."; continue; }
+        if [[ $printer_confirmed -ne 1 ]]; then
+            # После 10 попыток — ручной запрос пользователю
+            while true; do
+                clear
+                echo "===== Проверка подключения принтера (ручной режим) ====="
+                echo "Текущее состояние USB-устройств:"
+                lsusb | awk '{printf "%-10s %-40s %-40s\n", $2, $6, substr($0, index($0,$7))}'
+                echo
+                read -rp "Подключен ли нужный принтер? [y/N]: " usb_ans
+                if [[ "$usb_ans" =~ ^[Yy]$ ]]; then
+                    if detect_printer; then
+                        break
+                    else
+                        echo "Принтер не обнаружен системой. Проверьте кабель и питание."
+                        sleep 2
+                    fi
+                else
+                    echo -n "Повторная проверка через: "
+                    for t in {3..1}; do
+                        echo -ne "$t\033[0K\r"
+                        sleep 1
+                    done
+                fi
+            done
+        fi
 
         if [[ -z "$file_ext" ]]; then
             file_ext="${url##*.}"
