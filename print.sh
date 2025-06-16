@@ -56,33 +56,49 @@ check_dependencies() {
 # 4. Работа с группами пользователей
 ############################################################
 add_user_groups() {
-    if getent group "domain users" >/dev/null; then
-        # Явно добавляем группу "domain users" в нужные группы через roleadd/gpasswd
-        for grp in "${GROUPS_TO_ADD[@]}"; do
-            if ! getent group "$grp" >/dev/null; then
-                log_info "Группа $grp не существует, создаю."
-                groupadd "$grp"
-            fi
-            # Добавляем группу "domain users" в группу $grp (через gpasswd)
-            log_info "Добавляю 'domain users' в группу $grp"
-            gpasswd -a "domain users" "$grp" >>"$LOG_FILE" 2>&1
-        done
+  local domain_group="domain users"
+  # Проверяем наличие группы "domain users"
+  if getent group "$domain_group" >/dev/null; then
+    # Создаём необходимые группы, если их нет
+    for grp in "${GROUPS_TO_ADD[@]}"; do
+      if ! getent group "$grp" >/dev/null; then
+        log_info "Создаю группу $grp."
+        groupadd "$grp"
+      fi
+    done
 
-        # Получаем всех пользователей группы "domain users"
-        domain_users=$(getent group "domain users" | awk -F: '{print $4}' | tr ',' '\n' | tr -d ' ')
-        for grp in "${GROUPS_TO_ADD[@]}"; do
-            # Проверяем и добавляем каждого пользователя в нижнем регистре
-            for user in $domain_users; do
-                user_lc=$(echo "$user" | tr '[:upper:]' '[:lower:]')
-                if [[ -n "$user_lc" ]] && ! id -nG "$user_lc" | grep -qw "$grp"; then
-                    log_info "Добавляю '$user_lc' в группу $grp"
-                    gpasswd -a "$user_lc" "$grp" >>"$LOG_FILE" 2>&1
-                fi
-            done
-        done
-    else
-        log_info "Группа 'domain users' не найдена, пропускаю добавление в группы."
+    # Добавляем группу "domain users" в нужные группы (если поддерживается roleadd)
+    if command -v roleadd &>/dev/null; then
+      for grp in "${GROUPS_TO_ADD[@]}"; do
+        log_info "Добавляю группу '$domain_group' в $grp через roleadd."
+        roleadd "$domain_group" "$grp" >>"$LOG_FILE" 2>&1
+      done
     fi
+
+    # Добавляем "domain users" в каждую целевую группу через gpasswd
+    for grp in "${GROUPS_TO_ADD[@]}"; do
+      log_info "Добавляю '$domain_group' в группу $grp."
+      gpasswd -a "$domain_group" "$grp" >>"$LOG_FILE" 2>&1
+    done
+
+    # Получаем список пользователей из группы "domain users"
+    local domain_users
+    domain_users=$(getent group "$domain_group" | awk -F: '{print $4}' | tr ',' '\n' | tr -d ' ')
+
+    # Добавляем каждого пользователя в нужные группы, если он ещё не состоит в них
+    for user in $domain_users; do
+      user_lc=$(echo "$user" | tr '[:upper:]' '[:lower:]')
+      [[ -z "$user_lc" || "$user_lc" == "$domain_group" ]] && continue
+      for grp in "${GROUPS_TO_ADD[@]}"; do
+        if ! id -nG "$user_lc" | grep -qw "$grp"; then
+          log_info "Добавляю пользователя '$user_lc' в группу $grp."
+          gpasswd -a "$user_lc" "$grp" >>"$LOG_FILE" 2>&1
+        fi
+      done
+    done
+  else
+    log_info "Группа '$domain_group' не найдена, пропускаю добавление пользователей в группы."
+  fi
 }
 
 ############################################################
