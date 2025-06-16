@@ -253,8 +253,7 @@ main() {
         fi
 
         # Новый интерактивный этап проверки подключения принтера
-        local printer_confirmed=0
-        for attempt in {1..15}; do
+        while true; do
             clear
             echo "===== Проверка подключения принтера ====="
             echo "Текущее состояние USB-устройств:"
@@ -262,17 +261,14 @@ main() {
             echo
             read -rp "Подключен ли нужный принтер? [y/N]: " usb_ans
             if [[ "$usb_ans" =~ ^[Yy]$ ]]; then
-                printer_confirmed=1
                 break
             fi
-            echo "Повторная проверка через 4 секунды... ($attempt/15)"
-            sleep 4
+            echo -n "Повторная проверка через: "
+            for t in {3..1}; do
+                echo -ne "$t\033[0K\r"
+                sleep 1
+            done
         done
-        if [[ $printer_confirmed -ne 1 ]]; then
-            log_error "Принтер не был подтвержден как подключенный."
-            log_solution "Проверьте кабель и питание принтера, затем повторите попытку."
-            continue
-        fi
 
         detect_printer || { log_solution "Подключите поддерживаемый принтер и повторите попытку."; continue; }
 
