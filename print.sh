@@ -186,114 +186,111 @@ main() {
 
     local url mode file_ext file_path
 
-    if [[ $# -lt 1 ]]; then
-        while true; do
-            echo "========== МЕНЮ УСТАНОВКИ ПРИНТЕРА =========="
-            echo "1) Автоматически (по ссылке)"
-            echo "2) Ручной выбор типа установки"
-            echo "0) Выйти"
-            read -rp "Выберите действие: " main_choice
-            case "$main_choice" in
-                1)
-                    read -rp "Введите ссылку на драйвер: " url
-                    mode="auto"
-                    break
-                    ;;
-                2)
-                    while true; do
-                        echo "----- Выберите тип установки -----"
-                        echo "1) PPD-файл"
-                        echo "2) SH/RUN-скрипт"
-                        echo "3) ZIP-архив"
-                        echo "0) Назад"
-                        read -rp "Ваш выбор: " type_choice
-                        case "$type_choice" in
-                            1)
-                                file_ext="ppd"
-                                ;;
-                            2)
-                                file_ext="sh"
-                                ;;
-                            3)
-                                file_ext="zip"
-                                ;;
-                            0)
-                                continue 2
-                                ;;
-                            *)
-                                echo "Некорректный выбор"; continue
-                                ;;
-                        esac
-                        read -rp "Введите ссылку на файл: " url
-                        mode="manual"
-                        break 2
-                    done
-                    ;;
-                0)
-                    echo "Выход."
-                    exit 0
-                    ;;
-                *)
-                    echo "Некорректный выбор"
-                    ;;
-            esac
-        done
-        # Если ручной режим, подменяем file_ext для дальнейшей логики
-        if [[ "$mode" == "manual" && -n "$file_ext" ]]; then
+    while true; do
+        # Меню выбора режима
+        if [[ $# -lt 1 ]]; then
+            while true; do
+                echo "========== МЕНЮ УСТАНОВКИ ПРИНТЕРА =========="
+                echo "1) Автоматически (по ссылке)"
+                echo "2) Ручной выбор типа установки"
+                echo "0) Выйти"
+                read -rp "Выберите действие: " main_choice
+                case "$main_choice" in
+                    1)
+                        read -rp "Введите ссылку на драйвер: " url
+                        mode="auto"
+                        break
+                        ;;
+                    2)
+                        while true; do
+                            echo "----- Выберите тип установки -----"
+                            echo "1) PPD-файл"
+                            echo "2) SH/RUN-скрипт"
+                            echo "3) ZIP-архив"
+                            echo "0) Назад"
+                            read -rp "Ваш выбор: " type_choice
+                            case "$type_choice" in
+                                1) file_ext="ppd";;
+                                2) file_ext="sh";;
+                                3) file_ext="zip";;
+                                0) continue 2;;
+                                *) echo "Некорректный выбор"; continue;;
+                            esac
+                            read -rp "Введите ссылку на файл: " url
+                            mode="manual"
+                            break 2
+                        done
+                        ;;
+                    0)
+                        echo "Выход."
+                        exit 0
+                        ;;
+                    *)
+                        echo "Некорректный выбор"
+                        ;;
+                esac
+            done
+            if [[ "$mode" == "manual" && -n "$file_ext" ]]; then
+                file_path="$TMP_DIR/driver.$file_ext"
+            fi
+        else
+            url="$1"
+            mode="${2:-auto}"
+            if [[ "$mode" != "auto" && "$mode" != "manual" ]]; then
+                log_error "Режим должен быть 'auto' или 'manual'"
+                log_solution "Укажите режим: auto (автоматически) или manual (с подтверждением действий)."
+                continue
+            fi
+        fi
+
+        check_dependencies
+        # add_user_groups   # ← закомментировано на время тестов
+
+        if [[ "$mode" == "auto" ]]; then
+            remove_printers "auto"
+        else
+            remove_printers "manual"
+        fi
+
+        detect_printer || { log_solution "Подключите поддерживаемый принтер и повторите попытку."; continue; }
+
+        if [[ -z "$file_ext" ]]; then
+            file_ext="${url##*.}"
             file_path="$TMP_DIR/driver.$file_ext"
         fi
-    else
-        url="$1"
-        mode="${2:-auto}"
-        if [[ "$mode" != "auto" && "$mode" != "manual" ]]; then
-            log_error "Режим должен быть 'auto' или 'manual'"
-            log_solution "Укажите режим: auto (автоматически) или manual (с подтверждением действий)."
-            return 1
+
+        log_info "Скачиваю драйвер с $url"
+        if ! wget -O "$file_path" "$url" >>"$LOG_FILE" 2>&1; then
+            log_error "Не удалось скачать файл с $url"
+            log_solution "Проверьте корректность URL и доступность файла. Попробуйте скачать вручную."
+            continue
         fi
-    fi
 
-    check_dependencies
-    # add_user_groups   # ← закомментировано на время тестов
+        case "$file_ext" in
+            ppd)
+                install_from_ppd "$file_path" "$mode" || continue
+                ;;
+            sh|run)
+                install_from_hplip "$file_path" "$mode" || continue
+                ;;
+            zip)
+                install_from_zip "$file_path" "$mode" || continue
+                ;;
+            *)
+                log_error "Неподдерживаемое расширение файла: $file_ext"
+                log_solution "Поддерживаются расширения: ppd, sh, run, zip."
+                continue
+                ;;
+        esac
 
-    if [[ "$mode" == "auto" ]]; then
-        remove_printers "auto"
-    else
-        remove_printers "manual"
-    fi
-
-    detect_printer || log_solution "Подключите поддерживаемый принтер и повторите попытку."
-
-    # Если не задан file_ext (автоматический режим), определяем его из ссылки
-    if [[ -z "$file_ext" ]]; then
-        file_ext="${url##*.}"
-        file_path="$TMP_DIR/driver.$file_ext"
-    fi
-
-    log_info "Скачиваю драйвер с $url"
-    if ! wget -O "$file_path" "$url" >>"$LOG_FILE" 2>&1; then
-        log_error "Не удалось скачать файл с $url"
-        log_solution "Проверьте корректность URL и доступность файла. Попробуйте скачать вручную."
-        return 1
-    fi
-
-    case "$file_ext" in
-        ppd)
-            install_from_ppd "$file_path" "$mode"
-            ;;
-        sh|run)
-            install_from_hplip "$file_path" "$mode"
-            ;;
-        zip)
-            install_from_zip "$file_path" "$mode"
-            ;;
-        *)
-            log_error "Неподдерживаемое расширение файла: $file_ext"
-            log_solution "Поддерживаются расширения: ppd, sh, run, zip."
-            return 1
-            ;;
-    esac
-
-    log_info "Установка принтера завершена."
+        log_info "Установка принтера завершена."
+        # После успешной попытки спрашиваем, повторить ли установку
+        echo "Хотите выполнить ещё одну установку? [y/N]"
+        read -r again
+        [[ "$again" =~ ^[Yy]$ ]] || break
+        # Очистка переменных для новой итерации
+        url=""; mode=""; file_ext=""; file_path=""
+    done
 }
 
 ############################################################
