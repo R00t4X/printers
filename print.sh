@@ -178,7 +178,8 @@ install_from_zip() {
 # 7. Основная логика работы скрипта
 ############################################################
 main() {
-    check_root || log_solution "Запустите скрипт с правами root."
+    check_root || { log_solution "Запустите скрипт с правами root."; return 1; }
+
     mkdir -p "$TMP_DIR"
     touch "$LOG_FILE"
     chmod 600 "$LOG_FILE"
