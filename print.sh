@@ -360,6 +360,14 @@ main() {
             remove_printers "manual"
         fi
 
+        # Новый запрос на удаление принтеров
+        local remove_choice
+        echo "Хотите удалить установленные в системе принтеры? [y/N]"
+        read -r remove_choice
+        if [[ "$remove_choice" =~ ^[Yy]$ ]]; then
+            remove_printers "manual"
+        fi
+
         # Новый интерактивный этап проверки подключения принтера
         local printer_confirmed=0
         for attempt in {1..10}; do
