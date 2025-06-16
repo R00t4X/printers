@@ -1,9 +1,9 @@
 #!/bin/bash
-# set -euo pipefail   # ← закомментируйте или удалите эту строку
+# set -euo pipefail   # ← эту строку можно раскомментировать для строгой обработки ошибок
 IFS=$'\n\t'
 
 ############################################################
-# 1. Константы и переменные
+# 1. Основные переменные и настройки
 ############################################################
 LOG_FILE="/var/log/printer_install.log"
 TMP_DIR="/tmp/printer_install"
@@ -12,7 +12,7 @@ GROUPS_TO_ADD=(lp scanner camera)
 PRINTER_KEYWORDS="Printer|HP|Brother|Canon|Epson|Kyocera|Katusha|Pantum|Lexmark|Samsung|Ricoh|Xerox|OKI|Sharp|Toshiba|Dell|Fujitsu|Konica|Minolta|Zebra|Citizen|Star|Olivetti|Sindoh|SATO|Seiko|TSC|Bixolon|Dymo|Intermec|Datamax|Honeywell|Printek|Tally|Dascom|Mutoh|Roland|Summa|Graphtec|Mimaki|Anycubic|Creality|Flashforge|Phrozen|QIDI|Raise3D|Wanhao|Artillery|Snapmaker|Prusa|Ultimaker|Formlabs|Peopoly|Elegoo|Voxelab|Kingroon|Anet|Geeetech|Tronxy|BIQU|Voron|Ender|LulzBot|XYZprinting|Monoprice|Kodak|Polaroid|Leapfrog|MakerBot|BCN3D|CraftBot|Zortrax|Tevo|JGAurora|Qidi"
 
 ############################################################
-# 2. Логирование и вывод сообщений
+# 2. Логирование
 ############################################################
 log_info() {
     echo "[ИНФО] $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"
@@ -27,12 +27,12 @@ log_solution() {
 }
 
 ############################################################
-# 3. Проверки окружения и зависимостей
+# 3. Проверка прав и зависимостей
 ############################################################
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        log_error "Скрипт должен быть запущен от root."
-        log_solution "Запустите скрипт от имени пользователя root (например: su -c './main.sh ...')."
+        log_error "Скрипт нужно запускать от root."
+        log_solution "Попробуйте: sudo ./print.sh"
         return 1
     fi
 }
@@ -40,12 +40,11 @@ check_root() {
 check_dependencies() {
     for util in "${REQUIRED_UTILS[@]}"; do
         if ! command -v "$util" &>/dev/null; then
-            log_info "Устанавливаю отсутствующую утилиту: $util"
+            log_info "Не хватает $util, устанавливаю..."
             apt-get update >>"$LOG_FILE" 2>&1
             if ! apt-get install -y "$util" >>"$LOG_FILE" 2>&1; then
                 log_error "Не удалось установить $util"
-                log_solution "Проверьте подключение к интернету и наличие репозиториев. Установите $util вручную: apt-get install $util"
-                # continue вместо exit
+                log_solution "Проверьте интернет и репозитории. Можно попробовать: apt-get install $util"
                 continue
             fi
         fi
@@ -57,9 +56,7 @@ check_dependencies() {
 ############################################################
 add_user_groups() {
   local domain_group="domain users"
-  # Проверяем наличие группы "domain users"
   if getent group "$domain_group" >/dev/null; then
-    # Создаём необходимые группы, если их нет
     for grp in "${GROUPS_TO_ADD[@]}"; do
       if ! getent group "$grp" >/dev/null; then
         log_info "Создаю группу $grp."
@@ -67,7 +64,6 @@ add_user_groups() {
       fi
     done
 
-    # Добавляем группу "domain users" в нужные группы (если поддерживается roleadd)
     if command -v roleadd &>/dev/null; then
       for grp in "${GROUPS_TO_ADD[@]}"; do
         log_info "Добавляю группу '$domain_group' в $grp через roleadd."
@@ -75,17 +71,14 @@ add_user_groups() {
       done
     fi
 
-    # Добавляем "domain users" в каждую целевую группу через gpasswd
     for grp in "${GROUPS_TO_ADD[@]}"; do
       log_info "Добавляю '$domain_group' в группу $grp."
       gpasswd -a "$domain_group" "$grp" >>"$LOG_FILE" 2>&1
     done
 
-    # Получаем список пользователей из группы "domain users"
     local domain_users
     domain_users=$(getent group "$domain_group" | awk -F: '{print $4}' | tr ',' '\n' | tr -d ' ')
 
-    # Добавляем каждого пользователя в нужные группы, если он ещё не состоит в них
     for user in $domain_users; do
       user_lc=$(echo "$user" | tr '[:upper:]' '[:lower:]')
       [[ -z "$user_lc" || "$user_lc" == "$domain_group" ]] && continue
@@ -102,7 +95,7 @@ add_user_groups() {
 }
 
 ############################################################
-# 5. Управление принтерами
+# 5. Удаление принтеров
 ############################################################
 remove_printers() {
     local mode="$1"
@@ -122,19 +115,22 @@ remove_printers() {
     done
 }
 
+############################################################
+# 6. Поиск принтера по USB
+############################################################
 detect_printer() {
     local found
     found=$(lsusb | grep -E "$PRINTER_KEYWORDS" || true)
     if [[ -z "$found" ]]; then
-        log_error "Поддерживаемый принтер через USB не обнаружен."
-        log_solution "Убедитесь, что принтер подключён и включён. Проверьте кабель и повторите попытку."
+        log_error "Принтер по USB не найден."
+        log_solution "Проверьте подключение и питание принтера."
         return 1
     fi
     log_info "Обнаружены принтер(ы): $found"
 }
 
 ############################################################
-# 6. Установка драйверов принтера
+# 7. Установка драйверов
 ############################################################
 install_from_ppd() {
     local ppd_file="$1"
@@ -148,7 +144,7 @@ install_from_ppd() {
     fi
     if ! lpadmin -p "$printer_name" -E -v usb://$(lsusb | grep -E "$PRINTER_KEYWORDS" | head -n1 | awk '{print $6}') -P "$ppd_file" >>"$LOG_FILE" 2>&1; then
         log_error "Не удалось установить принтер $printer_name"
-        log_solution "Проверьте корректность PPD-файла и наличие прав. Попробуйте установить вручную через lpadmin."
+        log_solution "Проверьте PPD-файл и права. Можно попробовать вручную через lpadmin."
         return
     fi
     lpoptions -d "$printer_name" >>"$LOG_FILE" 2>&1
@@ -170,24 +166,21 @@ install_from_hplip() {
         read -rp "Запустить $script_file? [y/N]: " ans
         [[ "$ans" =~ ^[Yy]$ ]] || return
     fi
-    # Если это именно hp-install.sh, после выполнения выводим hp-setup
     if [[ "$(basename "$script_file")" == "hp-install.sh" ]]; then
         if ! "$script_file" --auto-setup >>"$LOG_FILE" 2>&1; then
             log_error "Ошибка выполнения hp-install.sh"
-            log_solution "Проверьте совместимость скрипта с вашей системой и выполните его вручную для диагностики."
+            log_solution "Проверьте совместимость скрипта с системой и попробуйте вручную."
             return
         fi
-        log_info "Запуск hp-setup в интерактивном режиме (вывод в консоль)"
-        # Явно перенаправляем ввод/вывод hp-setup в терминал, чтобы не было подвисания
+        log_info "Запуск hp-setup (интерактивно)"
         hp-setup < /dev/tty > /dev/tty 2>&1
     else
         if ! "$script_file" --auto-setup >>"$LOG_FILE" 2>&1; then
             log_error "Ошибка выполнения HPLIP-скрипта"
-            log_solution "Проверьте совместимость скрипта с вашей системой и выполните его вручную для диагностики."
+            log_solution "Проверьте совместимость скрипта с системой и попробуйте вручную."
             return
         fi
     fi
-    # После установки ищем последний добавленный принтер и делаем его по умолчанию + тестовая печать
     local last_printer
     last_printer=$(lpstat -p | awk '{print $2}' | tail -n1)
     if [[ -n "$last_printer" ]]; then
@@ -201,7 +194,6 @@ install_from_hplip() {
 install_from_zip() {
     local zip_file="$1"
     local mode="$2"
-    # Получаем имя принтера из имени архива (без расширения)
     local printer_dir
     printer_dir="$(basename "$zip_file")"
     printer_dir="${printer_dir%%.*}"
@@ -210,40 +202,38 @@ install_from_zip() {
     rm -rf "$unzip_dir"
     mkdir -p "$unzip_dir"
 
-    # Определяем тип архива и распаковываем соответствующим инструментом
     case "$zip_file" in
         *.zip)
             if ! 7z x "$zip_file" -o"$unzip_dir" >>"$LOG_FILE" 2>&1; then
                 log_error "Ошибка распаковки ZIP-архива $zip_file"
-                log_solution "Проверьте целостность архива и наличие утилиты 7z."
+                log_solution "Проверьте архив и наличие 7z."
                 return 1
             fi
             ;;
         *.tar.gz|*.tgz)
             if ! tar -xzf "$zip_file" -C "$unzip_dir" >>"$LOG_FILE" 2>&1; then
                 log_error "Ошибка распаковки TAR.GZ-архива $zip_file"
-                log_solution "Проверьте целостность архива и наличие утилиты tar."
+                log_solution "Проверьте архив и наличие tar."
                 return 1
             fi
             ;;
         *.tar)
             if ! tar -xf "$zip_file" -C "$unzip_dir" >>"$LOG_FILE" 2>&1; then
                 log_error "Ошибка распаковки TAR-архива $zip_file"
-                log_solution "Проверьте целостность архива и наличие утилиты tar."
+                log_solution "Проверьте архив и наличие tar."
                 return 1
             fi
             ;;
         *)
-            # Попробуем 7z для других форматов (например, rar, 7z и др.)
             if ! 7z x "$zip_file" -o"$unzip_dir" >>"$LOG_FILE" 2>&1; then
                 log_error "Ошибка распаковки архива $zip_file неизвестного типа"
-                log_solution "Проверьте целостность архива и наличие утилиты 7z."
+                log_solution "Проверьте архив и наличие 7z."
                 return 1
             fi
             ;;
     esac
 
-    log_info "Содержимое распакованного архива:"
+    log_info "Содержимое архива:"
     ls -lR "$unzip_dir" | tee -a "$LOG_FILE"
     local found_ppd found_sh
     found_ppd=$(find "$unzip_dir" -type f -name "*.ppd" | head -n1 || true)
@@ -253,8 +243,8 @@ install_from_zip() {
     elif [[ -n "$found_sh" ]]; then
         install_from_hplip "$found_sh" "$mode"
     else
-        log_error "В архиве не найдено поддерживаемых файлов для установки."
-        log_solution "Проверьте содержимое архива. Ожидаются файлы .ppd, .sh или .run."
+        log_error "В архиве нет подходящих файлов для установки."
+        log_solution "Проверьте архив: нужны .ppd, .sh или .run."
         return 1
     fi
 }
