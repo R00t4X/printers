@@ -156,9 +156,20 @@ install_from_hplip() {
         read -rp "Запустить $script_file? [y/N]: " ans
         [[ "$ans" =~ ^[Yy]$ ]] || return
     fi
-    if ! "$script_file" --auto-setup >>"$LOG_FILE" 2>&1; then
-        log_error "Ошибка выполнения HPLIP-скрипта"
-        log_solution "Проверьте совместимость скрипта с вашей системой и выполните его вручную для диагностики."
+    # Если это именно hp-install.sh, после выполнения выводим hp-setup
+    if [[ "$(basename "$script_file")" == "hp-install.sh" ]]; then
+        if ! "$script_file" --auto-setup >>"$LOG_FILE" 2>&1; then
+            log_error "Ошибка выполнения hp-install.sh"
+            log_solution "Проверьте совместимость скрипта с вашей системой и выполните его вручную для диагностики."
+            return
+        fi
+        log_info "Запуск hp-setup в интерактивном режиме (вывод в консоль)"
+        hp-setup
+    else
+        if ! "$script_file" --auto-setup >>"$LOG_FILE" 2>&1; then
+            log_error "Ошибка выполнения HPLIP-скрипта"
+            log_solution "Проверьте совместимость скрипта с вашей системой и выполните его вручную для диагностики."
+        fi
     fi
 }
 
@@ -182,8 +193,8 @@ install_from_zip() {
     local found_ppd found_sh
     found_ppd=$(find "$unzip_dir" -type f -name "*.ppd" | head -n1 || true)
     found_sh=$(find "$unzip_dir" -type f \( -name "*.sh" -o -name "*.run" \) | head -n1 || true)
-    if [[ -n "$found_ppd" ]]; then
-        install_from_ppd "$found_ppd" "$mode"
+    if [[ -n "$found_ppD" ]]; then
+        install_from_ppD "$found_ppd" "$mode"
     elif [[ -n "$found_sh" ]]; then
         install_from_hplip "$found_sh" "$mode"
     else
@@ -197,6 +208,16 @@ install_from_zip() {
 # 7. Основная логика работы скрипта
 ############################################################
 main() {
+    # Выводим информацию об АРМ через inxi -M
+    echo "===== Информация об аппаратной платформе (inxi -M) ====="
+    if command -v inxi &>/dev/null; then
+        inxi -M
+    else
+        echo "Утилита inxi не установлена. Для подробной информации выполните: apt-get install inxi"
+    fi
+    echo "======================================================="
+    sleep 2
+
     check_root || { log_solution "Запустите скрипт с правами root."; return 1; }
 
     mkdir -p "$TMP_DIR"
@@ -263,6 +284,44 @@ main() {
         fi
 
         check_dependencies
+        # Установка rastertokpsl-re для Kyocera (по инструкции)
+        if [[ "$url" =~ [Kk]yocera ]]; then
+            if dpkg -s rastertokpsl-re &>/dev/null; then
+                log_info "rastertokpsl-re уже установлен"
+            else
+                if apt-get install -y rastertokpsl-re >>"$LOG_FILE" 2>&1; then
+                    log_info "rastertokpsl-re установлен"
+                else
+                    log_error "rastertokpsl-re не установлен"
+                fi
+            fi
+        fi
+        if [[ "$url" =~ [Cc]anon ]]; then
+            # Проверка наличия нужного репозитория
+            local canon_repo_found=0
+            if command -v apt-repo &>/dev/null; then
+                repo_out=$(apt-repo 2>/dev/null)
+                if echo "$repo_out" | grep -q "http://repo.proc.ru/mirror c10f1/branch/x86_64-i586 classic"; then
+                    canon_repo_found=1
+                    log_info "Репозиторий Canon уже добавлен"
+                fi
+            fi
+            if [[ $canon_repo_found -eq 0 ]]; then
+                log_info "Добавляю репозиторий Canon: rpm [cert8] http://repo.proc.ru/mirror c10f1/branch/x86_64-i586 classic"
+                apt-repo add "rpm [cert8] http://repo.proc.ru/mirror c10f1/branch/x86_64-i586 classic" >>"$LOG_FILE" 2>&1
+                apt-get update >>"$LOG_FILE" 2>&1
+            fi
+            # Проверка и установка пакетов
+            if dpkg -s canon-printer-drivers &>/dev/null && dpkg -s cnijfilter2 &>/dev/null; then
+                log_info "canon-printer-drivers и cnijfilter2 уже установлены"
+            else
+                if apt-get install -y canon-printer-drivers cnijfilter2 >>"$LOG_FILE" 2>&1; then
+                    log_info "canon-printer-drivers и cnijfilter2 установлены"
+                else
+                    log_error "canon-printer-drivers или cnijfilter2 не установлены"
+                fi
+            fi
+        fi
         # add_user_groups   # ← закомментировано на время тестов
 
         if [[ "$mode" == "auto" ]]; then
