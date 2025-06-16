@@ -9,7 +9,7 @@ LOG_FILE="/var/log/printer_install.log"
 TMP_DIR="/tmp/printer_install"
 REQUIRED_UTILS=(wget apt-get lpadmin lpinfo lpstat lpoptions hp-setup lsusb 7z)
 GROUPS_TO_ADD=(lp scanner camera)
-PRINTER_KEYWORDS="Printer|HP|Brother|Canon|Epson"
+PRINTER_KEYWORDS="Printer|HP|Brother|Canon|Epson|Kyocera|Katusha|Pantum|Lexmark|Samsung|Ricoh|Xerox|OKI|Sharp|Toshiba|Dell|Fujitsu|Konica|Minolta|Zebra|Citizen|Star|Olivetti|Sindoh|SATO|Seiko|TSC|Bixolon|Dymo|Intermec|Datamax|Honeywell|Printek|Tally|Dascom|Mutoh|Roland|Summa|Graphtec|Mimaki|Anycubic|Creality|Flashforge|Phrozen|QIDI|Raise3D|Wanhao|Artillery|Snapmaker|Prusa|Ultimaker|Formlabs|Peopoly|Elegoo|Voxelab|Kingroon|Anet|Geeetech|Tronxy|BIQU|Voron|Ender|LulzBot|XYZprinting|Monoprice|Kodak|Polaroid|Leapfrog|MakerBot|BCN3D|CraftBot|Zortrax|Tevo|JGAurora|Qidi"
 
 ############################################################
 # 2. Логирование и вывод сообщений
@@ -163,8 +163,8 @@ install_from_zip() {
     local found_ppd found_sh
     found_ppd=$(find "$TMP_DIR/unzipped" -type f -name "*.ppd" | head -n1 || true)
     found_sh=$(find "$TMP_DIR/unzipped" -type f \( -name "*.sh" -o -name "*.run" \) | head -n1 || true)
-    if [[ -n "$found_ppd" ]]; then
-        install_from_ppd "$found_ppd" "$mode"
+    if [[ -n "$found_ppD" ]]; then
+        install_from_ppD "$found_ppD" "$mode"
     elif [[ -n "$found_sh" ]]; then
         install_from_hplip "$found_sh" "$mode"
     else
